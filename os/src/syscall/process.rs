@@ -70,7 +70,7 @@ pub fn sys_task_info(_ti: *mut TaskInfo) -> isize {
         &mut  *_ti
     };
 
-    // 填充任务信息
+    // 填充任务信息 test
     task_info.status = current_task.status;
     task_info.syscall_times.copy_from_slice(&current_task.syscall_times); // 拷贝系统调用次数
     task_info.time = get_time_ms() - current_task.time;
