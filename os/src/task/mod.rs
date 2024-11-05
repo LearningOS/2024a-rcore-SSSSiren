@@ -17,9 +17,15 @@ mod task;
 use crate::config::MAX_APP_NUM;
 use crate::loader::{get_num_app, init_app_cx};
 use crate::sync::UPSafeCell;
+use crate::syscall::process::TaskInfo;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
+
+use crate::{
+    config::MAX_SYSCALL_NUM,
+    timer::get_time_ms,
+};
 
 pub use context::TaskContext;
 
@@ -54,10 +60,16 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            task_info: TaskInfo {
+                status: TaskStatus::UnInit,
+                syscall_times: [0; MAX_SYSCALL_NUM],
+                time:0,
+            }
         }; MAX_APP_NUM];
         for (i, task) in tasks.iter_mut().enumerate() {
             task.task_cx = TaskContext::goto_restore(init_app_cx(i));
             task.task_status = TaskStatus::Ready;
+            task.task_info.status = TaskStatus::Ready;
         }
         TaskManager {
             num_app,
@@ -72,6 +84,32 @@ lazy_static! {
 }
 
 impl TaskManager {
+    /// 为系统调用增加计数
+    fn syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.status = TaskStatus::Running;
+        inner.tasks[current].task_info.syscall_times[syscall_id] += 1;
+        drop(inner);
+    }
+
+    /// 废弃
+    fn syscall_time(&self) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].task_info.time = get_time_ms() - inner.tasks[current].task_info.time;
+        drop(inner);
+    }
+
+    /// 获取当前任务对应的任务信息的指针
+    fn get_current_taskinfo(&self) -> *const TaskInfo {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        let ptr = &inner.tasks[current].task_info as *const TaskInfo;
+        drop(inner);
+        ptr
+    }
+    
     /// Run the first task in task list.
     ///
     /// Generally, the first task in task list is an idle task (we call it zero process later).
@@ -80,6 +118,8 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        task0.task_info.status = TaskStatus::Running;
+        task0.task_info.time = get_time_ms();
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -122,6 +162,10 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            inner.tasks[next].task_info.status = TaskStatus::Running;
+            if inner.tasks[next].task_info.time == 0{
+                inner.tasks[next].task_info.time = get_time_ms();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -135,6 +179,21 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+}
+
+/// count the number of syscall
+pub fn syscall_count(syscall_id: usize) {
+    TASK_MANAGER.syscall_count(syscall_id);
+}
+
+/// update the syscall time of current task
+pub fn syscall_time() {
+    TASK_MANAGER.syscall_time();
+}
+
+/// get pointer of current task's TaskInfo
+pub fn get_current_taskinfo() -> *const TaskInfo {
+    TASK_MANAGER.get_current_taskinfo()
 }
 
 /// Run the first task in task list.
